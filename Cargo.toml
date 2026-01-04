@@ -1,7 +1,8 @@
 [package]
+edition = "2024"
+license = "MIT"
 name = "ark"
 version = "0.1.0"
-edition = "2024"
 
 [dependencies]
 # async
@@ -10,7 +11,7 @@ tokio = { version = "1.49.0", features = ["full"] }
 # storage
 redb = { version = "3.1.0" }
 
-# networking / blobs
+# p2p / blobs
 iroh-blobs = { version = "0.97.0" }
 iroh = { version = "0.95.1" }
 
@@ -24,7 +25,7 @@ rancor = { version = "0.1.1" }
 anyhow = { version = "1.0.100" }
 rand_chacha = { version = "0.9.0" }
 
-# strict linting
+# lint
 [workspace.lints.clippy]
 await_holding_invalid_type = "deny"
 await_holding_lock = "deny"
