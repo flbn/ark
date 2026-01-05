@@ -2,3 +2,4 @@
 
 # db artifacts
 *.db
+data/

@@ -12,7 +12,7 @@ tokio = { version = "1.49.0", features = ["full"] }
 redb = { version = "3.1.0" }
 
 # p2p / blobs
-iroh-blobs = { version = "0.97.0" }
+iroh-blobs = { version = "0.97.0", features = ["fs-store"] }
 iroh = { version = "0.95.1" }
 
 # utils
