@@ -24,9 +24,21 @@ pub struct BlobStore {
 
 impl BlobStore {
     #[allow(clippy::disallowed_types)]
-    pub async fn new(db_path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub async fn new(root_path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let root = root_path.as_ref();
+
+        if !root.exists() {
+            #[allow(clippy::disallowed_methods)]
+            std::fs::create_dir_all(root)?;
+        }
+
+        // init redb (metdata) @ root/index.redb
+        let db_path = root.join("index.redb");
         let index = Index::new(db_path)?;
-        let blobs = NetworkedBlobStore::new().await?;
+
+        // init iroh (data) # root/blobs
+        // pass the dir name
+        let blobs = NetworkedBlobStore::new(root.join("blobs")).await?;
 
         Ok(Self { index, blobs })
     }
@@ -40,10 +52,16 @@ impl BlobStore {
         let hash = self.blobs.put(data).await?;
 
         // write metadata to index
-        // NOTE(@o11y): blocks async thread briefly, which is acceptable for Redb's speed, but for massive loads we might spawn_blocking.
+        // NOTE(@o11y): sync, but fast. for massive loads we might want to spawn blocking.
         self.index.register_blob(hash, meta)?;
 
         Ok(hash)
+    }
+
+    #[allow(dead_code)]
+    pub async fn shutdown(&self) -> Result<(), StoreError> {
+        self.blobs.shutdown().await?;
+        Ok(())
     }
 
     pub async fn update_reference(&self, name: RefName, hash: BlobHash) -> Result<(), StoreError> {
