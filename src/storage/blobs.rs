@@ -6,7 +6,7 @@ use iroh_blobs::{ALPN, BlobsProtocol, store::fs::FsStore};
 use rand_chacha::rand_core::SeedableRng;
 use camino::Utf8Path;
 use thiserror::Error;
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 #[derive(Error, Debug)]
 pub enum BlobError {
@@ -77,5 +77,14 @@ impl NetworkedBlobStore {
         let iroh_hash = iroh_blobs::Hash::from(hash);
         let reader = self.store.reader(iroh_hash);
         Ok(reader)
+    }
+
+    #[allow(dead_code)]
+    pub async fn get_bytes(&self, hash: BlobHash) -> Result<Vec<u8>, BlobError> {
+        let iroh_hash = iroh_blobs::Hash::from(hash);
+        let mut reader = self.store.reader(iroh_hash);
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).await?;
+        Ok(buf)
     }
 }
