@@ -9,6 +9,7 @@ async fn main() -> anyhow::Result<()> {
     let metadata = BlobMetadata {
         blob_type: BlobType::File,
         created_at: 1735689600,
+        local_only: false,
     };
 
     println!("storing blob...");
@@ -39,6 +40,7 @@ mod tests {
         let meta = BlobMetadata {
             blob_type: BlobType::File,
             created_at: 9999,
+            local_only: false,
         };
 
         let hash;

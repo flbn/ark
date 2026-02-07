@@ -58,6 +58,7 @@ fn blob_metadata_rkyv_roundtrip() {
     let meta = BlobMetadata {
         blob_type: BlobType::Commit,
         created_at: 1735689600,
+        local_only: false,
     };
 
     let bytes =
@@ -77,6 +78,7 @@ fn blob_metadata_rkyv_all_types() {
         let meta = BlobMetadata {
             blob_type: bt,
             created_at: 0,
+            local_only: false,
         };
         let bytes =
             rkyv::to_bytes::<rancor::Error>(&meta).expect("serialize failed");

@@ -40,15 +40,16 @@ impl BlobStore {
         Ok(Self { index, blobs })
     }
 
+    // @todo(o11y): put_object writes blob then metadata in separate steps — a crash
+    //   between the two leaves an orphan blob with no index entry. needs atomic
+    //   rollback or a startup reconciliation pass.
     pub async fn put_object(
         &self,
         data: &[u8],
         meta: BlobMetadata,
     ) -> Result<BlobHash, StoreError> {
-        // write data to blob store
         let hash = self.blobs.put(data).await?;
 
-        // write metadata to index
         // NOTE(@o11y): sync, but fast. for massive loads we might want to spawn blocking.
         self.index.register_blob(hash, meta)?;
 
@@ -58,6 +59,13 @@ impl BlobStore {
     #[allow(dead_code)]
     pub async fn shutdown(&self) -> Result<(), StoreError> {
         self.blobs.shutdown().await?;
+        Ok(())
+    }
+
+    // @todo(o11y): promote is metadata-only right now — once gossip lands,
+    //   promotion should also trigger a HEAD broadcast for commit blobs
+    pub fn promote_blob(&self, hash: BlobHash) -> Result<(), StoreError> {
+        self.index.set_blob_local_only(hash, false)?;
         Ok(())
     }
 
