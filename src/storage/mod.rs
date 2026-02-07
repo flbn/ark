@@ -13,7 +13,7 @@ pub enum StoreError {
     #[error("Index error: {0}")]
     Index(#[from] IndexError),
     #[error("Blob error: {0}")]
-    Blob(#[from] BlobError),
+    Blob(#[from] Box<BlobError>),
 }
 
 pub struct BlobStore {
@@ -48,7 +48,7 @@ impl BlobStore {
         data: &[u8],
         meta: BlobMetadata,
     ) -> Result<BlobHash, StoreError> {
-        let hash = self.blobs.put(data).await?;
+        let hash = self.blobs.put(data).await.map_err(Box::new)?;
 
         // NOTE(@o11y): sync, but fast. for massive loads we might want to spawn blocking.
         self.index.register_blob(hash, meta)?;
@@ -58,7 +58,7 @@ impl BlobStore {
 
     #[allow(dead_code)]
     pub async fn shutdown(&self) -> Result<(), StoreError> {
-        self.blobs.shutdown().await?;
+        self.blobs.shutdown().await.map_err(Box::new)?;
         Ok(())
     }
 
