@@ -30,9 +30,13 @@ anyhow = { version = "1.0.100" }
 thiserror = { version = "2.0.17" }
 
 # utils
+blake3 = { version = "1" }
 bytecheck = { version = "0.8" }
+bytes = { version = "1" }
 camino = { version = "1.1" }
 fs-err = { version = "3.1" }
+parking_lot = { version = "0.12" }
+rand = { version = "0.9" }
 rand_chacha = { version = "0.9.0" }
 rancor = { version = "0.1.1" }
 rkyv = { version = "0.8.12", features = ["bytecheck", "std", "unaligned"] }
