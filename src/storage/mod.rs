@@ -2,11 +2,14 @@ pub mod blobs;
 pub mod index;
 
 use crate::domain::{BlobHash, BlobMetadata, RefName};
+use crate::network::{GossipError, GossipHandle, HeadUpdate};
 use blobs::{BlobError, NetworkedBlobStore};
 use index::{Index, IndexError};
 
 use camino::Utf8Path;
 use thiserror::Error;
+
+use std::time::SystemTime;
 
 #[derive(Error, Debug)]
 pub enum StoreError {
@@ -14,11 +17,14 @@ pub enum StoreError {
     Index(#[from] IndexError),
     #[error("Blob error: {0}")]
     Blob(#[from] Box<BlobError>),
+    #[error("Gossip error: {0}")]
+    Gossip(#[from] Box<GossipError>),
 }
 
 pub struct BlobStore {
     pub index: Index,
     pub blobs: NetworkedBlobStore,
+    pub gossip: GossipHandle,
 }
 
 impl BlobStore {
@@ -29,15 +35,18 @@ impl BlobStore {
             fs_err::create_dir_all(root)?;
         }
 
-        // init redb (metdata) @ root/index.redb
         let db_path = root.join("index.redb");
         let index = Index::new(db_path)?;
 
-        // init iroh (data) # root/blobs
-        // pass the dir name
         let blobs = NetworkedBlobStore::new(root.join("blobs")).await?;
 
-        Ok(Self { index, blobs })
+        let gossip = GossipHandle::new(blobs.gossip.clone());
+
+        Ok(Self {
+            index,
+            blobs,
+            gossip,
+        })
     }
 
     // @todo(o11y): put_object writes blob then metadata in separate steps — a crash
@@ -71,6 +80,30 @@ impl BlobStore {
 
     pub async fn update_reference(&self, name: RefName, hash: BlobHash) -> Result<(), StoreError> {
         self.index.update_ref(&name, hash)?;
+        Ok(())
+    }
+
+    // @todo(o11y): update_reference_and_announce requires a pre-joined topic — callers
+    //   must call gossip.join_topic before this. no auto-join to keep control explicit.
+    pub async fn update_reference_and_announce(
+        &self,
+        name: RefName,
+        hash: BlobHash,
+        topic: iroh_gossip::TopicId,
+    ) -> Result<(), StoreError> {
+        self.index.update_ref(&name, hash)?;
+
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let update = HeadUpdate::new(name.as_str(), hash, timestamp);
+        self.gossip
+            .broadcast_head_update(topic, &update)
+            .await
+            .map_err(Box::new)?;
+
         Ok(())
     }
 }
