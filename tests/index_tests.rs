@@ -19,6 +19,7 @@ fn make_meta(blob_type: BlobType, ts: u64) -> BlobMetadata {
     BlobMetadata {
         blob_type,
         created_at: ts,
+        local_only: false,
     }
 }
 

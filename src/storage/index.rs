@@ -1,7 +1,7 @@
 // tldr: persistent index mapping hashes -> metadata and refs -> hashes.
 // redb for acid guarantees (panic safe) + rkyv to map disk bytes directly to struct layout
 
-use redb::{Database, ReadableDatabase, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use camino::Utf8Path;
 
@@ -97,6 +97,46 @@ impl Index {
             }
             None => Ok(None),
         }
+    }
+
+    pub fn set_blob_local_only(&self, hash: BlobHash, local_only: bool) -> Result<(), IndexError> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(BLOB_INDEX)?;
+            let new_bytes = {
+                let existing = table.get(&hash.0)?;
+                match existing {
+                    Some(access) => {
+                        let bytes = access.value();
+                        let mut meta = rkyv::from_bytes::<BlobMetadata, rancor::Error>(bytes)
+                            .map_err(|e: rancor::Error| IndexError::Rkyv(e.to_string()))?;
+                        meta.local_only = local_only;
+                        rkyv::to_bytes::<rancor::Error>(&meta)
+                            .map_err(|e: rancor::Error| IndexError::Rkyv(e.to_string()))?
+                    }
+                    None => return Err(IndexError::Rkyv("blob not found in index".to_string())),
+                }
+            };
+            table.insert(&hash.0, new_bytes.as_slice())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    // @todo(o11y): O(n) scan — add a secondary SHARED_BLOBS table if this becomes a bottleneck at scale
+    pub fn list_shared_blobs(&self) -> Result<Vec<BlobHash>, IndexError> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(BLOB_INDEX)?;
+        let mut result = Vec::new();
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            let meta = rkyv::from_bytes::<BlobMetadata, rancor::Error>(value.value())
+                .map_err(|e: rancor::Error| IndexError::Rkyv(e.to_string()))?;
+            if !meta.local_only {
+                result.push(BlobHash(*key.value()));
+            }
+        }
+        Ok(result)
     }
 
     #[allow(dead_code)]

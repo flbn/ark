@@ -10,6 +10,8 @@ pub struct StoredSignature {
     pub tz_offset_minutes: i32,
 }
 
+// @todo(o11y): StoredCommit has no secure_sig field — commits written through ark
+//   lose their cryptographic signature. must add before signing support ships.
 #[derive(Debug, Archive, RkyvSerialize, RkyvDeserialize, CheckBytes)]
 #[bytecheck(crate = bytecheck)]
 pub struct StoredCommit {

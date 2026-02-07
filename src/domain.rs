@@ -68,6 +68,8 @@ impl RemoteTicket {
 }
 
 // on disk header for every blob.
+// @todo(o11y): no versioned decoding yet — adding/removing fields will break existing data.
+//   acceptable pre-release; add V1 compat reader before any persistent deployment.
 #[derive(
     Debug,
     Archive, // generates an 'ArchivedBlobMetadata' struct for raw mapping
@@ -80,6 +82,9 @@ impl RemoteTicket {
 pub struct BlobMetadata {
     pub blob_type: BlobType,
     pub created_at: u64,
+    // @todo(o11y): local_only is a simple bool for now — may evolve into a tier enum
+    //   (e.g. Ephemeral / Checkpoint / Archived) once retention policies are defined
+    pub local_only: bool,
 }
 
 #[derive(

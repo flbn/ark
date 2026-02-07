@@ -28,12 +28,12 @@ pub struct NetworkedBlobStore {
 }
 
 impl NetworkedBlobStore {
-    // initializes a p2p node:
-    // 1) generates ephemeral identity (for now)
-    // 2) binds udp socket
-    // 3) spawns background router to handle 'blobs' protocol
+    // @todo(o11y): endpoint is consumed by Router::builder — need to store it separately
+    //   before building the router so gossip can reuse the same identity and socket
     pub async fn new(blobs_dir: impl AsRef<Utf8Path>) -> Result<Self, BlobError> {
         let blobs_dir = blobs_dir.as_ref();
+        // @todo(o11y): hardcoded seed means every node gets the same identity — replace
+        //   with persistent key loaded from disk before any multi-node usage
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0u64);
         let secret_key = SecretKey::generate(&mut rng);
 
@@ -65,7 +65,7 @@ impl NetworkedBlobStore {
     }
 
     // writes raw bytes. returns verified blake3 hash.
-    // NOTE: this is strictly local right now; gossip comes later.
+    // @todo(o11y): strictly local right now — gossip announcement on put deferred until network module lands
     pub async fn put(&self, data: &[u8]) -> Result<BlobHash, BlobError> {
         let tag = self.store.add_slice(data).await?;
         Ok(BlobHash::from(tag.hash))

@@ -61,6 +61,7 @@ impl ArkBackend {
                 BlobMetadata {
                     blob_type: BlobType::Tree,
                     created_at: 0,
+                    local_only: false,
                 },
             )
             .await
@@ -82,6 +83,7 @@ impl ArkBackend {
                 BlobMetadata {
                     blob_type: BlobType::Commit,
                     created_at: 0,
+                    local_only: false,
                 },
             )
             .await
@@ -302,6 +304,7 @@ impl Backend for ArkBackend {
                 BlobMetadata {
                     blob_type: BlobType::File,
                     created_at: timestamp_now(),
+                    local_only: false,
                 },
             )
             .await
@@ -339,6 +342,7 @@ impl Backend for ArkBackend {
                 BlobMetadata {
                     blob_type: BlobType::Symlink,
                     created_at: timestamp_now(),
+                    local_only: false,
                 },
             )
             .await
@@ -404,6 +408,7 @@ impl Backend for ArkBackend {
                 BlobMetadata {
                     blob_type: BlobType::Tree,
                     created_at: timestamp_now(),
+                    local_only: false,
                 },
             )
             .await
@@ -440,6 +445,9 @@ impl Backend for ArkBackend {
         Ok(stored_to_jj_commit(&stored))
     }
 
+    // @todo(o11y): all writes hardcode local_only: false — need a way to distinguish
+    //   working copy snapshots (local_only: true) from checkpoint commits.
+    //   jj's Backend trait doesn't carry that signal; will need an out-of-band flag or wrapper.
     async fn write_commit(
         &self,
         contents: Commit,
@@ -459,6 +467,7 @@ impl Backend for ArkBackend {
                 BlobMetadata {
                     blob_type: BlobType::Commit,
                     created_at: timestamp_now(),
+                    local_only: false,
                 },
             )
             .await
@@ -479,6 +488,8 @@ impl Backend for ArkBackend {
         Ok(Box::pin(futures::stream::empty()))
     }
 
+    // @todo(o11y): gc is a no-op — must implement to reclaim local_only ephemeral blobs
+    //   that are older than keep_newer and not reachable from any ref
     fn gc(&self, _index: &dyn Index, _keep_newer: SystemTime) -> BackendResult<()> {
         Ok(())
     }

@@ -18,6 +18,7 @@ fn make_meta(ts: u64) -> BlobMetadata {
     BlobMetadata {
         blob_type: BlobType::File,
         created_at: ts,
+        local_only: false,
     }
 }
 
