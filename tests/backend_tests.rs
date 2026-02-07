@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use ark::backend::ids::commit_id_to_blob_hash;
 use ark::backend::ArkBackend;
 use ark::storage::BlobStore;
 use camino::Utf8Path;
-use jj_lib::backend::{Backend, Commit, ChangeId, Signature, Timestamp, MillisSinceEpoch, TreeValue, Tree, CopyId};
+use jj_lib::backend::{Backend, Commit, ChangeId, SecureSig, Signature, Timestamp, MillisSinceEpoch, TreeValue, Tree, CopyId};
 use jj_lib::merge::Merge;
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo_path::RepoPathComponentBuf;
@@ -23,6 +24,22 @@ async fn tmp_backend() -> (tempfile::TempDir, ArkBackend) {
         .await
         .expect("failed to create backend");
     (dir, backend)
+}
+
+async fn tmp_backend_with_store() -> (tempfile::TempDir, Arc<BlobStore>, ArkBackend) {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let root = Utf8Path::from_path(dir.path())
+        .expect("non-utf8 temp path")
+        .to_owned();
+    let store = Arc::new(
+        BlobStore::new(&root)
+            .await
+            .expect("failed to create store"),
+    );
+    let backend = ArkBackend::new(store.clone())
+        .await
+        .expect("failed to create backend");
+    (dir, store, backend)
 }
 
 fn make_signature() -> Signature {
@@ -322,4 +339,193 @@ async fn get_copy_records_empty() {
         .expect("get_copy_records failed");
     let records: Vec<_> = stream.collect().await;
     assert!(records.is_empty());
+}
+
+// --- working copy snapshot signal ---
+
+#[tokio::test]
+async fn mark_next_commit_local_only_marks_commit() {
+    let (_dir, store, backend) = tmp_backend_with_store().await;
+    let path = jj_lib::repo_path::RepoPathBuf::root();
+
+    let tree = Tree::from_sorted_entries(vec![]);
+    let tree_id = backend.write_tree(&path, &tree).await.expect("write_tree");
+
+    let commit = Commit {
+        parents: vec![backend.root_commit_id().clone()],
+        predecessors: vec![],
+        root_tree: Merge::resolved(tree_id),
+        change_id: ChangeId::new(vec![0xA1; 32]),
+        description: "snapshot".to_string(),
+        author: make_signature(),
+        committer: make_signature(),
+        secure_sig: None,
+    };
+    backend.mark_next_commit_local_only();
+    let (commit_id, _) = backend
+        .write_commit(commit, None)
+        .await
+        .expect("write_commit");
+
+    let hash = commit_id_to_blob_hash(&commit_id);
+    let meta = store
+        .index
+        .get_blob_meta(hash)
+        .expect("read meta failed")
+        .expect("missing metadata");
+    assert!(meta.local_only);
+}
+
+#[tokio::test]
+async fn default_commit_is_not_local_only() {
+    let (_dir, store, backend) = tmp_backend_with_store().await;
+    let path = jj_lib::repo_path::RepoPathBuf::root();
+
+    let tree = Tree::from_sorted_entries(vec![]);
+    let tree_id = backend.write_tree(&path, &tree).await.expect("write_tree");
+
+    let commit = Commit {
+        parents: vec![backend.root_commit_id().clone()],
+        predecessors: vec![],
+        root_tree: Merge::resolved(tree_id),
+        change_id: ChangeId::new(vec![0xB1; 32]),
+        description: "normal".to_string(),
+        author: make_signature(),
+        committer: make_signature(),
+        secure_sig: None,
+    };
+    let (commit_id, _) = backend
+        .write_commit(commit, None)
+        .await
+        .expect("write_commit");
+
+    let hash = commit_id_to_blob_hash(&commit_id);
+    let meta = store
+        .index
+        .get_blob_meta(hash)
+        .expect("read meta failed")
+        .expect("missing metadata");
+    assert!(!meta.local_only);
+}
+
+#[tokio::test]
+async fn local_only_flag_is_one_shot() {
+    let (_dir, store, backend) = tmp_backend_with_store().await;
+    let path = jj_lib::repo_path::RepoPathBuf::root();
+
+    let tree = Tree::from_sorted_entries(vec![]);
+    let tree_id = backend.write_tree(&path, &tree).await.expect("write_tree");
+
+    let commit1 = Commit {
+        parents: vec![backend.root_commit_id().clone()],
+        predecessors: vec![],
+        root_tree: Merge::resolved(tree_id.clone()),
+        change_id: ChangeId::new(vec![0xC1; 32]),
+        description: "first".to_string(),
+        author: make_signature(),
+        committer: make_signature(),
+        secure_sig: None,
+    };
+    backend.mark_next_commit_local_only();
+    let (id1, _) = backend
+        .write_commit(commit1, None)
+        .await
+        .expect("write first commit");
+    let meta1 = store
+        .index
+        .get_blob_meta(commit_id_to_blob_hash(&id1))
+        .expect("read meta failed")
+        .expect("missing metadata");
+    assert!(meta1.local_only);
+
+    let commit2 = Commit {
+        parents: vec![backend.root_commit_id().clone()],
+        predecessors: vec![],
+        root_tree: Merge::resolved(tree_id),
+        change_id: ChangeId::new(vec![0xC2; 32]),
+        description: "second".to_string(),
+        author: make_signature(),
+        committer: make_signature(),
+        secure_sig: None,
+    };
+    let (id2, _) = backend
+        .write_commit(commit2, None)
+        .await
+        .expect("write second commit");
+    let meta2 = store
+        .index
+        .get_blob_meta(commit_id_to_blob_hash(&id2))
+        .expect("read meta failed")
+        .expect("missing metadata");
+    assert!(!meta2.local_only);
+}
+
+// --- signature round-trip ---
+
+#[tokio::test]
+async fn commit_with_secure_sig_round_trips() {
+    let (_dir, backend) = tmp_backend().await;
+    let path = jj_lib::repo_path::RepoPathBuf::root();
+
+    let tree = Tree::from_sorted_entries(vec![]);
+    let tree_id = backend.write_tree(&path, &tree).await.expect("write_tree");
+
+    let commit = Commit {
+        parents: vec![backend.root_commit_id().clone()],
+        predecessors: vec![],
+        root_tree: Merge::resolved(tree_id),
+        change_id: ChangeId::new(vec![0xD1; 32]),
+        description: "signed commit".to_string(),
+        author: make_signature(),
+        committer: make_signature(),
+        secure_sig: Some(SecureSig {
+            data: vec![1, 2, 3],
+            sig: vec![4, 5, 6],
+        }),
+    };
+
+    let (commit_id, _) = backend
+        .write_commit(commit, None)
+        .await
+        .expect("write_commit");
+
+    let read_commit = backend
+        .read_commit(&commit_id)
+        .await
+        .expect("read_commit");
+    let sig = read_commit
+        .secure_sig
+        .expect("expected secure_sig to be Some");
+    assert_eq!(sig.data, vec![1, 2, 3]);
+    assert_eq!(sig.sig, vec![4, 5, 6]);
+}
+
+#[tokio::test]
+async fn commit_without_secure_sig_round_trips() {
+    let (_dir, backend) = tmp_backend().await;
+    let path = jj_lib::repo_path::RepoPathBuf::root();
+
+    let tree = Tree::from_sorted_entries(vec![]);
+    let tree_id = backend.write_tree(&path, &tree).await.expect("write_tree");
+
+    let commit = Commit {
+        parents: vec![backend.root_commit_id().clone()],
+        predecessors: vec![],
+        root_tree: Merge::resolved(tree_id),
+        change_id: ChangeId::new(vec![0xE1; 32]),
+        description: "unsigned".to_string(),
+        author: make_signature(),
+        committer: make_signature(),
+        secure_sig: None,
+    };
+    let (commit_id, _) = backend
+        .write_commit(commit, None)
+        .await
+        .expect("write_commit");
+
+    let read_commit = backend
+        .read_commit(&commit_id)
+        .await
+        .expect("read_commit");
+    assert!(read_commit.secure_sig.is_none());
 }

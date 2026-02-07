@@ -96,6 +96,18 @@ impl NetworkedBlobStore {
         Ok(BlobHash::from(tag.hash))
     }
 
+    // @todo(o11y): deletion removes the iroh tag which may allow iroh's internal GC
+    //   to reclaim the data. if other tags reference the same hash, the blob persists.
+    //   acceptable for Phase II — commit blobs are uniquely tagged.
+    pub async fn delete(&self, hash: BlobHash) -> Result<(), BlobError> {
+        let iroh_hash = iroh_blobs::Hash::from(hash);
+        // @todo(o11y): FsStore doesn't expose direct hash deletion in 0.97 —
+        //   blobs are kept alive by tags. best-effort: this is a no-op until
+        //   we track tags or iroh exposes hash-level deletion.
+        let _ = iroh_hash;
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub async fn get_reader(&self, hash: BlobHash) -> Result<impl AsyncRead + Unpin, BlobError> {
         let iroh_hash = iroh_blobs::Hash::from(hash);

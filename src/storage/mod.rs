@@ -50,8 +50,10 @@ impl BlobStore {
     }
 
     // @todo(o11y): put_object writes blob then metadata in separate steps — a crash
-    //   between the two leaves an orphan blob with no index entry. needs atomic
-    //   rollback or a startup reconciliation pass.
+    //   between the two leaves an orphan blob with no index entry. acceptable pre-release
+    //   because iroh-blobs is content-addressed and idempotent: orphan blobs only waste disk
+    //   space, they don't corrupt correctness. on startup, a future reconciliation pass
+    //   should scan (blob store − index) and delete orphans.
     pub async fn put_object(
         &self,
         data: &[u8],
@@ -68,6 +70,14 @@ impl BlobStore {
     #[allow(dead_code)]
     pub async fn shutdown(&self) -> Result<(), StoreError> {
         self.blobs.shutdown().await.map_err(Box::new)?;
+        Ok(())
+    }
+
+    // @todo(o11y): delete_object removes index metadata but blob deletion from iroh
+    //   is best-effort (no-op in 0.97). orphan blob data may persist on disk until
+    //   iroh exposes hash-level deletion or tag tracking is implemented.
+    pub fn delete_object(&self, hash: BlobHash) -> Result<(), StoreError> {
+        self.index.remove_blob(hash)?;
         Ok(())
     }
 

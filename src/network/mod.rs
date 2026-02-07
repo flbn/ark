@@ -1,6 +1,8 @@
 // tldr: gossip layer for broadcasting HEAD updates across peers via iroh-gossip.
 // nodes subscribe to a topic per repo and broadcast ref updates on checkpoint commits.
 
+pub mod sync;
+
 use std::collections::HashMap;
 
 use bytes::Bytes;
