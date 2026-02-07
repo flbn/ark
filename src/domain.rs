@@ -96,4 +96,5 @@ pub enum BlobType {
     Commit,
     Tree,
     File,
+    Symlink,
 }
