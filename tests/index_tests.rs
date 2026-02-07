@@ -315,3 +315,84 @@ fn remotes_survive_reopen() {
         assert_eq!(fetched, ticket);
     }
 }
+
+// --- remove_blob ---
+
+#[test]
+fn remove_blob_removes_metadata() {
+    let (_dir, index) = tmp_index();
+    let hash = make_hash(0x10);
+    let meta = BlobMetadata {
+        blob_type: BlobType::File,
+        created_at: 100,
+        local_only: false,
+    };
+
+    index.register_blob(hash, meta).expect("register failed");
+    assert!(index.get_blob_meta(hash).expect("read failed").is_some());
+
+    let removed = index.remove_blob(hash).expect("remove failed");
+    assert!(removed);
+    assert!(index.get_blob_meta(hash).expect("read failed").is_none());
+}
+
+#[test]
+fn remove_blob_returns_false_for_nonexistent() {
+    let (_dir, index) = tmp_index();
+    let removed = index
+        .remove_blob(make_hash(0xFF))
+        .expect("remove failed");
+    assert!(!removed);
+}
+
+// --- list_local_only_blobs ---
+
+#[test]
+fn list_local_only_blobs_returns_only_local() {
+    let (_dir, index) = tmp_index();
+
+    let local1 = make_hash(0x20);
+    let local2 = make_hash(0x21);
+    let shared = make_hash(0x22);
+
+    index
+        .register_blob(
+            local1,
+            BlobMetadata {
+                blob_type: BlobType::Commit,
+                created_at: 1,
+                local_only: true,
+            },
+        )
+        .expect("register local1 failed");
+    index
+        .register_blob(
+            local2,
+            BlobMetadata {
+                blob_type: BlobType::File,
+                created_at: 2,
+                local_only: true,
+            },
+        )
+        .expect("register local2 failed");
+    index
+        .register_blob(
+            shared,
+            BlobMetadata {
+                blob_type: BlobType::Tree,
+                created_at: 3,
+                local_only: false,
+            },
+        )
+        .expect("register shared failed");
+
+    let locals = index
+        .list_local_only_blobs()
+        .expect("list_local_only_blobs failed");
+    let local_hashes: Vec<BlobHash> = locals.iter().map(|(h, _)| *h).collect();
+
+    assert_eq!(locals.len(), 2);
+    assert!(local_hashes.contains(&local1));
+    assert!(local_hashes.contains(&local2));
+    assert!(!local_hashes.contains(&shared));
+}

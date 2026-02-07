@@ -215,3 +215,30 @@ async fn store_and_read_many_blobs() {
 
     store.shutdown().await.expect("shutdown failed");
 }
+
+// --- delete_object ---
+
+#[tokio::test]
+async fn delete_object_removes_from_index() {
+    let (_dir, store) = tmp_store().await;
+
+    let hash = store
+        .put_object(
+            b"ephemeral data",
+            BlobMetadata {
+                blob_type: BlobType::File,
+                created_at: 1,
+                local_only: false,
+            },
+        )
+        .await
+        .expect("put_object failed");
+
+    assert!(store.index.get_blob_meta(hash).expect("read meta failed").is_some());
+
+    store.delete_object(hash).expect("delete_object failed");
+
+    assert!(store.index.get_blob_meta(hash).expect("read meta failed").is_none());
+
+    store.shutdown().await.expect("shutdown failed");
+}
