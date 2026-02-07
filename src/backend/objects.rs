@@ -10,8 +10,16 @@ pub struct StoredSignature {
     pub tz_offset_minutes: i32,
 }
 
-// @todo(o11y): StoredCommit has no secure_sig field — commits written through ark
-//   lose their cryptographic signature. must add before signing support ships.
+#[derive(Debug, Archive, RkyvSerialize, RkyvDeserialize, CheckBytes)]
+#[bytecheck(crate = bytecheck)]
+pub struct StoredSecureSig {
+    pub data: Vec<u8>,
+    pub sig: Vec<u8>,
+}
+
+// @todo(o11y): adding secure_sig changes the on-disk format — no versioned
+//   decoding yet. old commits without this field will fail to deserialize.
+//   acceptable pre-release; add V1 compat reader before persistent deployment.
 #[derive(Debug, Archive, RkyvSerialize, RkyvDeserialize, CheckBytes)]
 #[bytecheck(crate = bytecheck)]
 pub struct StoredCommit {
@@ -22,6 +30,7 @@ pub struct StoredCommit {
     pub description: String,
     pub author: StoredSignature,
     pub committer: StoredSignature,
+    pub secure_sig: Option<StoredSecureSig>,
 }
 
 #[derive(Debug, Archive, RkyvSerialize, RkyvDeserialize, CheckBytes)]

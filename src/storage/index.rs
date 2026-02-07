@@ -139,6 +139,32 @@ impl Index {
         Ok(result)
     }
 
+    pub fn remove_blob(&self, hash: BlobHash) -> Result<bool, IndexError> {
+        let write_txn = self.db.begin_write()?;
+        let removed = {
+            let mut table = write_txn.open_table(BLOB_INDEX)?;
+            table.remove(&hash.0)?.is_some()
+        };
+        write_txn.commit()?;
+        Ok(removed)
+    }
+
+    // @todo(o11y): O(n) scan — same as list_shared_blobs. add secondary table if scale demands it.
+    pub fn list_local_only_blobs(&self) -> Result<Vec<(BlobHash, BlobMetadata)>, IndexError> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(BLOB_INDEX)?;
+        let mut result = Vec::new();
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            let meta = rkyv::from_bytes::<BlobMetadata, rancor::Error>(value.value())
+                .map_err(|e: rancor::Error| IndexError::Rkyv(e.to_string()))?;
+            if meta.local_only {
+                result.push((BlobHash(*key.value()), meta));
+            }
+        }
+        Ok(result)
+    }
+
     #[allow(dead_code)]
     pub fn store_remote(&self, name: &str, ticket: &RemoteTicket) -> Result<(), IndexError> {
         let write_txn = self.db.begin_write()?;

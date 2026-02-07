@@ -8,11 +8,12 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use parking_lot::Mutex;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use jj_lib::backend::{
     Backend, BackendError, BackendResult, ChangeId, Commit, CommitId, CopyHistory, CopyId,
-    CopyRecord, FileId, Signature as JjSignature, MillisSinceEpoch,
+    CopyRecord, FileId, SecureSig, Signature as JjSignature, MillisSinceEpoch,
     SigningFn, SymlinkId, Timestamp, Tree, TreeId, TreeValue,
 };
 use jj_lib::index::Index;
@@ -29,7 +30,7 @@ use ids::{
     commit_id_to_blob_hash, file_id_to_blob_hash, symlink_id_to_blob_hash, tree_id_to_blob_hash,
 };
 use objects::{
-    StoredCommit, StoredEntryKind, StoredSignature, StoredTree, StoredTreeEntry,
+    StoredCommit, StoredEntryKind, StoredSecureSig, StoredSignature, StoredTree, StoredTreeEntry,
 };
 
 pub struct ArkBackend {
@@ -37,6 +38,9 @@ pub struct ArkBackend {
     root_commit_id: CommitId,
     root_change_id: ChangeId,
     empty_tree_id: TreeId,
+    // @todo(o11y): one-shot flag assumes concurrency() == 1. if backend concurrency
+    //   increases, replace with a scoped context or task-local storage.
+    next_commit_local_only: Mutex<bool>,
 }
 
 impl Debug for ArkBackend {
@@ -95,7 +99,12 @@ impl ArkBackend {
             root_commit_id,
             root_change_id,
             empty_tree_id,
+            next_commit_local_only: Mutex::new(false),
         })
+    }
+
+    pub fn mark_next_commit_local_only(&self) {
+        *self.next_commit_local_only.lock() = true;
     }
 }
 
@@ -129,6 +138,10 @@ fn jj_commit_to_stored(c: &Commit) -> StoredCommit {
         description: c.description.clone(),
         author: jj_sig_to_stored(&c.author),
         committer: jj_sig_to_stored(&c.committer),
+        secure_sig: c.secure_sig.as_ref().map(|s| StoredSecureSig {
+            data: s.data.clone(),
+            sig: s.sig.clone(),
+        }),
     }
 }
 
@@ -172,7 +185,10 @@ fn stored_to_jj_commit(s: &StoredCommit) -> Commit {
         description: s.description.clone(),
         author: stored_to_jj_sig(&s.author),
         committer: stored_to_jj_sig(&s.committer),
-        secure_sig: None,
+        secure_sig: s.secure_sig.as_ref().map(|ss| SecureSig {
+            data: ss.data.clone(),
+            sig: ss.sig.clone(),
+        }),
     }
 }
 
@@ -445,14 +461,18 @@ impl Backend for ArkBackend {
         Ok(stored_to_jj_commit(&stored))
     }
 
-    // @todo(o11y): all writes hardcode local_only: false — need a way to distinguish
-    //   working copy snapshots (local_only: true) from checkpoint commits.
-    //   jj's Backend trait doesn't carry that signal; will need an out-of-band flag or wrapper.
     async fn write_commit(
         &self,
         contents: Commit,
         _sign_with: Option<&mut SigningFn>,
     ) -> BackendResult<(CommitId, Commit)> {
+        let local_only = {
+            let mut flag = self.next_commit_local_only.lock();
+            let v = *flag;
+            *flag = false;
+            v
+        };
+
         let stored = jj_commit_to_stored(&contents);
         let bytes = rkyv::to_bytes::<rancor::Error>(&stored).map_err(|e| {
             BackendError::WriteObject {
@@ -467,7 +487,7 @@ impl Backend for ArkBackend {
                 BlobMetadata {
                     blob_type: BlobType::Commit,
                     created_at: timestamp_now(),
-                    local_only: false,
+                    local_only,
                 },
             )
             .await
@@ -488,9 +508,42 @@ impl Backend for ArkBackend {
         Ok(Box::pin(futures::stream::empty()))
     }
 
-    // @todo(o11y): gc is a no-op — must implement to reclaim local_only ephemeral blobs
-    //   that are older than keep_newer and not reachable from any ref
-    fn gc(&self, _index: &dyn Index, _keep_newer: SystemTime) -> BackendResult<()> {
+    // @todo(o11y): gc only considers commit blobs — tree/file/symlink blobs referenced
+    //   by unreachable commits are not reclaimed. full object-graph GC would require
+    //   traversing from reachable commits down to trees and files. acceptable for Phase II.
+    fn gc(&self, index: &dyn Index, keep_newer: SystemTime) -> BackendResult<()> {
+        let keep_newer_secs = keep_newer
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let locals = self
+            .store
+            .index
+            .list_local_only_blobs()
+            .map_err(|e| BackendError::Other(e.into()))?;
+
+        for (hash, meta) in locals {
+            if !matches!(meta.blob_type, BlobType::Commit) {
+                continue;
+            }
+            if meta.created_at >= keep_newer_secs {
+                continue;
+            }
+
+            let commit_id = blob_hash_to_commit_id(hash);
+            let reachable = index
+                .has_id(&commit_id)
+                .map_err(|e| BackendError::Other(e.into()))?;
+            if reachable {
+                continue;
+            }
+
+            self.store
+                .delete_object(hash)
+                .map_err(|e| BackendError::Other(e.into()))?;
+        }
+
         Ok(())
     }
 }
