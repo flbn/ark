@@ -10,6 +10,10 @@ use zerocopy::{FromBytes, IntoBytes};
 #[error("Reference name cannot be empty")]
 pub struct EmptyRefName;
 
+#[derive(Error, Debug)]
+#[error("Remote ticket cannot be empty")]
+pub struct EmptyRemoteTicket;
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, IntoBytes, FromBytes, Serialize, Deserialize,
 )]
@@ -43,6 +47,22 @@ impl RefName {
     }
 
     pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteTicket(Vec<u8>);
+
+impl RemoteTicket {
+    pub fn new(bytes: Vec<u8>) -> Result<Self, EmptyRemoteTicket> {
+        if bytes.is_empty() {
+            return Err(EmptyRemoteTicket);
+        }
+        Ok(Self(bytes))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 }

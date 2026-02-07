@@ -5,8 +5,7 @@ use crate::domain::{BlobHash, BlobMetadata, RefName};
 use blobs::{BlobError, NetworkedBlobStore};
 use index::{Index, IndexError};
 
-#[allow(clippy::disallowed_types)]
-use std::path::Path;
+use camino::Utf8Path;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -23,13 +22,11 @@ pub struct BlobStore {
 }
 
 impl BlobStore {
-    #[allow(clippy::disallowed_types)]
-    pub async fn new(root_path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub async fn new(root_path: impl AsRef<Utf8Path>) -> anyhow::Result<Self> {
         let root = root_path.as_ref();
 
         if !root.exists() {
-            #[allow(clippy::disallowed_methods)]
-            std::fs::create_dir_all(root)?;
+            fs_err::create_dir_all(root)?;
         }
 
         // init redb (metdata) @ root/index.redb

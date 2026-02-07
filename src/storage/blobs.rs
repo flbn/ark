@@ -4,8 +4,7 @@ use crate::domain::BlobHash;
 use iroh::{Endpoint, SecretKey, discovery::dns::DnsDiscovery, protocol::Router};
 use iroh_blobs::{ALPN, BlobsProtocol, store::fs::FsStore};
 use rand_chacha::rand_core::SeedableRng;
-#[allow(clippy::disallowed_types)]
-use std::path::Path;
+use camino::Utf8Path;
 use thiserror::Error;
 use tokio::io::AsyncRead;
 
@@ -33,16 +32,16 @@ impl NetworkedBlobStore {
     // 1) generates ephemeral identity (for now)
     // 2) binds udp socket
     // 3) spawns background router to handle 'blobs' protocol
-    #[allow(clippy::disallowed_types)]
-    pub async fn new(blobs_dir: impl AsRef<Path>) -> Result<Self, BlobError> {
+    pub async fn new(blobs_dir: impl AsRef<Utf8Path>) -> Result<Self, BlobError> {
+        let blobs_dir = blobs_dir.as_ref();
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0u64);
         let secret_key = SecretKey::generate(&mut rng);
 
         // create blob dir if it doesn't exist
-        tokio::fs::create_dir_all(&blobs_dir).await?;
+        tokio::fs::create_dir_all(blobs_dir).await?;
 
         // load the persistent store. spins up a bg task to manage IO
-        let store = FsStore::load(&blobs_dir).await?;
+        let store = FsStore::load(blobs_dir).await?;
 
         let endpoint = Endpoint::builder()
             .secret_key(secret_key)

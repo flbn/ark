@@ -1,8 +1,5 @@
-mod domain;
-mod storage;
-
-use domain::{BlobMetadata, BlobType, RefName};
-use storage::BlobStore;
+use ark::domain::{BlobMetadata, BlobType, RefName};
+use ark::storage::BlobStore;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -27,15 +24,16 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::{BlobMetadata, BlobType};
-    use crate::storage::BlobStore;
+    use ark::domain::{BlobMetadata, BlobType};
+    use ark::storage::BlobStore;
+    use camino::Utf8Path;
     use tokio::io::AsyncReadExt;
 
     #[tokio::test]
     async fn test_persistence_simulator() -> anyhow::Result<()> {
-        println!("starting test");
         let temp_dir = tempfile::tempdir()?;
-        let root_path = temp_dir.path();
+        let root_path = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| anyhow::anyhow!("non-utf8 temp path"))?;
 
         let data = b"this data must survive the dropped connection";
         let meta = BlobMetadata {
@@ -46,29 +44,21 @@ mod tests {
         let hash;
 
         {
-            println!("new blob store");
             let store = BlobStore::new(root_path).await?;
-
-            println!("storing blob hash...");
             hash = store.put_object(data, meta).await?;
-
-            println!("shutting down store 1...");
             store.shutdown().await?;
-        } // store drops here, but router is already dead
+        }
 
         {
-            println!("new blob store");
             let store = BlobStore::new(root_path).await?;
 
-            println!("getting blob meta...");
-            let fetched_meta = store.index.get_blob_meta(hash)?.expect("index lost :0");
+            let fetched_meta = store.index.get_blob_meta(hash)?.ok_or_else(|| {
+                anyhow::anyhow!("index lost blob metadata after restart")
+            })?;
             assert_eq!(fetched_meta.created_at, 9999);
 
-            println!("getting blob reader...");
             let mut reader = store.blobs.get_reader(hash).await?;
             let mut buffer = Vec::new();
-
-            println!("reading blob data...");
             reader.read_to_end(&mut buffer).await?;
             assert_eq!(buffer, data);
 

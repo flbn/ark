@@ -3,19 +3,15 @@
 
 use redb::{Database, ReadableDatabase, TableDefinition};
 
-use crate::domain::{
-    ArchivedBlobMetadata, // on-disk type
-    BlobHash,
-    BlobMetadata,
-    RefName,
-};
+use camino::Utf8Path;
 
-#[allow(clippy::disallowed_types)]
-use std::path::Path;
+use crate::domain::{BlobHash, BlobMetadata, RefName, RemoteTicket};
+
 use thiserror::Error;
 
 const BLOB_INDEX: TableDefinition<&[u8; 32], &[u8]> = TableDefinition::new("blob_index");
 const REFS: TableDefinition<&str, &[u8; 32]> = TableDefinition::new("refs");
+const REMOTES: TableDefinition<&str, &[u8]> = TableDefinition::new("remotes");
 
 #[derive(Error, Debug)]
 pub enum IndexError {
@@ -37,13 +33,13 @@ pub struct Index {
 
 impl Index {
     // opens db, ensures tables exist
-    #[allow(clippy::disallowed_types)]
-    pub fn new(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let db = Database::create(path)?;
+    pub fn new(path: impl AsRef<Utf8Path>) -> anyhow::Result<Self> {
+        let db = Database::create(path.as_ref())?;
         let write_txn = db.begin_write()?;
         {
             let _ = write_txn.open_table(BLOB_INDEX)?;
             let _ = write_txn.open_table(REFS)?;
+            let _ = write_txn.open_table(REMOTES)?;
         }
         write_txn.commit()?;
         Ok(Self { db })
@@ -75,7 +71,18 @@ impl Index {
         Ok(())
     }
 
-    // read metadata: verifies data integrity (checkbytes) before returning. we trust nothing on disk
+    #[allow(dead_code)]
+    pub fn get_ref(&self, name: &RefName) -> Result<Option<BlobHash>, IndexError> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(REFS)?;
+        match table.get(name.as_str())? {
+            Some(access) => Ok(Some(BlobHash(*access.value()))),
+            None => Ok(None),
+        }
+    }
+
+    // read metadata: validates + deserializes from disk bytes.
+    // uses from_bytes which handles alignment internally (redb gives us unaligned slices).
     #[allow(dead_code)]
     pub fn get_blob_meta(&self, hash: BlobHash) -> Result<Option<BlobMetadata>, IndexError> {
         let read_txn = self.db.begin_read()?;
@@ -84,18 +91,48 @@ impl Index {
         match table.get(&hash.0)? {
             Some(access) => {
                 let bytes = access.value();
-
-                // validate bytes match expected layout (checkbytes). access::<T> will return the _archived_ type, not the rust struct.
-                let archived = rkyv::access::<ArchivedBlobMetadata, rancor::Error>(bytes)
+                let meta = rkyv::from_bytes::<BlobMetadata, rancor::Error>(bytes)
                     .map_err(|e: rancor::Error| IndexError::Rkyv(e.to_string()))?;
-
-                // deserialize back to usable rust struct (BlobMetadata)
-                let meta: BlobMetadata = rkyv::deserialize::<BlobMetadata, rancor::Error>(archived)
-                    .map_err(|e: rancor::Error| IndexError::Rkyv(e.to_string()))?;
-
                 Ok(Some(meta))
             }
             None => Ok(None),
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn store_remote(&self, name: &str, ticket: &RemoteTicket) -> Result<(), IndexError> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(REMOTES)?;
+            table.insert(name, ticket.as_bytes())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn get_remote(&self, name: &str) -> Result<Option<RemoteTicket>, IndexError> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(REMOTES)?;
+        match table.get(name)? {
+            Some(access) => {
+                let bytes = access.value().to_vec();
+                RemoteTicket::new(bytes)
+                    .map(Some)
+                    .map_err(|e| IndexError::Rkyv(e.to_string()))
+            }
+            None => Ok(None),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn remove_remote(&self, name: &str) -> Result<bool, IndexError> {
+        let write_txn = self.db.begin_write()?;
+        let removed = {
+            let mut table = write_txn.open_table(REMOTES)?;
+            table.remove(name)?.is_some()
+        };
+        write_txn.commit()?;
+        Ok(removed)
     }
 }

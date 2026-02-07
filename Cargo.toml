@@ -6,24 +6,39 @@ version = "0.1.0"
 
 [dependencies]
 # async
+async-trait = { version = "0.1.89" }
+futures = { version = "0.3.31" }
+futures-util = { version = "0.3.31" }
 tokio = { version = "1.49.0", features = ["full"] }
 
 # storage
 redb = { version = "3.1.0" }
 
 # p2p / blobs
-iroh-blobs = { version = "0.97.0", features = ["fs-store"] }
 iroh = { version = "0.95.1" }
+iroh-blobs = { version = "0.97.0", features = ["fs-store"] }
+iroh-gossip = { version = "0.95.0" }
+
+# conflict resolution
+jj-lib = { version = "0.36.0" }
+
+# cli
+clap = { version = "4.5.54", features = ["derive"] }
+
+# errors
+anyhow = { version = "1.0.100" }
+thiserror = { version = "2.0.17" }
 
 # utils
-thiserror = { version = "2.0.17" }
-serde = { version = "1.0.228" }
-zerocopy = { version = "0.8.31", features = ["derive"] }
-rkyv = { version = "0.8.12" }
 bytecheck = { version = "0.8" }
-rancor = { version = "0.1.1" }
-anyhow = { version = "1.0.100" }
+camino = { version = "1.1" }
+fs-err = { version = "3.1" }
 rand_chacha = { version = "0.9.0" }
+rancor = { version = "0.1.1" }
+rkyv = { version = "0.8.12", features = ["bytecheck", "std", "unaligned"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0" }
+zerocopy = { version = "0.8.31", features = ["derive"] }
 
 # lint
 [workspace.lints.clippy]
@@ -41,4 +56,4 @@ print_stdout = "deny"
 print_stderr = "deny"
 
 [dev-dependencies]
-tempfile = "3.24.0"
+tempfile = { version = "3.24.0" }
