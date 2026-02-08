@@ -1,11 +1,15 @@
 use std::collections::BTreeSet;
+use std::time::Duration;
 
-use ark::domain::{BlobHash, BlobMetadata, BlobType};
+use ark::domain::{BlobHash, BlobMetadata, BlobType, RefName};
 use ark::network::sync::{
     fetch_missing_blobs, simulate_sync, Fingerprint, HashRange, Reconciler, SyncMessage,
 };
+use ark::network::{derive_topic_id, HeadUpdate};
 use ark::storage::BlobStore;
 use camino::Utf8Path;
+use iroh::discovery::static_provider::StaticProvider;
+use tokio::sync::broadcast;
 
 fn hash(seed: u8) -> BlobHash {
     BlobHash([seed; 32])
@@ -350,6 +354,67 @@ async fn tmp_store() -> (tempfile::TempDir, BlobStore) {
     (dir, store)
 }
 
+fn commit_meta(ts: u64) -> BlobMetadata {
+    BlobMetadata {
+        blob_type: BlobType::Commit,
+        created_at: ts,
+        local_only: false,
+    }
+}
+
+fn seed_addresses(stores: &[&BlobStore]) {
+    for (i, store_i) in stores.iter().enumerate() {
+        let provider = StaticProvider::new();
+        for (j, store_j) in stores.iter().enumerate() {
+            if i != j {
+                provider.add_endpoint_info(store_j.blobs.endpoint.addr());
+            }
+        }
+        store_i.blobs.endpoint.discovery().add(provider);
+    }
+}
+
+async fn wait_for_updates(
+    rx: &mut broadcast::Receiver<HeadUpdate>,
+    want: &[BlobHash],
+    timeout: Duration,
+) {
+    let mut seen = BTreeSet::new();
+    let target = want.len();
+
+    let result = tokio::time::timeout(timeout, async {
+        while seen.len() < target {
+            match rx.recv().await {
+                Ok(u) => {
+                    let h = u.hash();
+                    if want.contains(&h) {
+                        seen.insert(h);
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    continue;
+                }
+                Err(e) => {
+                    panic!("gossip recv failed: {e:?}");
+                }
+            }
+        }
+    })
+    .await;
+
+    result.expect("timed out waiting for gossip propagation");
+}
+
+async fn local_blob_set(store: &BlobStore, candidates: &[BlobHash]) -> Vec<BlobHash> {
+    let mut set = Vec::new();
+    for h in candidates {
+        if store.blobs.get_bytes(*h).await.is_ok() {
+            set.push(*h);
+        }
+    }
+    set
+}
+
 #[tokio::test]
 async fn fetch_empty_set_is_noop() {
     let (_dir, store) = tmp_store().await;
@@ -457,4 +522,220 @@ async fn fetch_multiple_blobs() {
 
     store_a.shutdown().await.expect("shutdown a failed");
     store_b.shutdown().await.expect("shutdown b failed");
+}
+
+// --- 5-node reconciliation (offline) ---
+
+#[test]
+fn five_node_reconciliation_offline() {
+    let common: Vec<BlobHash> = (0..10u8).map(|s| BlobHash([s; 32])).collect();
+    let extra_a = BlobHash([200u8; 32]);
+    let extra_b = BlobHash([201u8; 32]);
+
+    let mut sets: Vec<Vec<BlobHash>> = Vec::new();
+
+    // node A: common + extra_a
+    let mut a = common.clone();
+    a.push(extra_a);
+    sets.push(a);
+
+    // node B: common + extra_b
+    let mut b = common.clone();
+    b.push(extra_b);
+    sets.push(b);
+
+    // nodes C, D, E: only common
+    for _ in 0..3 {
+        sets.push(common.clone());
+    }
+
+    let max_rounds = 10;
+    for _round in 0..max_rounds {
+        let mut progress = false;
+
+        for i in 0..5 {
+            for j in (i + 1)..5 {
+                let result = simulate_sync(sets[i].clone(), sets[j].clone(), 8)
+                    .expect("simulate_sync failed");
+
+                for h in &result.a_needs {
+                    if !sets[i].contains(h) {
+                        sets[i].push(*h);
+                        progress = true;
+                    }
+                }
+
+                for h in &result.b_needs {
+                    if !sets[j].contains(h) {
+                        sets[j].push(*h);
+                        progress = true;
+                    }
+                }
+            }
+        }
+
+        if !progress {
+            break;
+        }
+    }
+
+    for (idx, set) in sets.iter().enumerate() {
+        let unique: BTreeSet<BlobHash> = set.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            12,
+            "node {idx} should have 12 blobs, has {}",
+            unique.len()
+        );
+        assert!(unique.contains(&extra_a), "node {idx} missing extra_a");
+        assert!(unique.contains(&extra_b), "node {idx} missing extra_b");
+    }
+}
+
+// --- 5-node convergence (test protocol 2.1) ---
+
+#[tokio::test]
+async fn five_node_convergence() {
+    let (_dir_a, store_a) = tmp_store().await;
+    let (_dir_b, store_b) = tmp_store().await;
+    let (_dir_c, store_c) = tmp_store().await;
+    let (_dir_d, store_d) = tmp_store().await;
+    let (_dir_e, store_e) = tmp_store().await;
+
+    let stores = [&store_a, &store_b, &store_c, &store_d, &store_e];
+
+    seed_addresses(&stores);
+
+    let ids: Vec<_> = stores.iter().map(|s| s.blobs.endpoint.id()).collect();
+    let addrs: Vec<_> = stores.iter().map(|s| s.blobs.endpoint.addr()).collect();
+
+    let topic = derive_topic_id(b"convergence-5-node-test");
+
+    store_a
+        .gossip
+        .join_topic(topic, ids[1..].to_vec())
+        .await
+        .expect("A join_topic failed");
+
+    for store in &stores[1..] {
+        store
+            .gossip
+            .join_topic(topic, vec![ids[0]])
+            .await
+            .expect("join_topic failed");
+    }
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let mut rx_c = store_c
+        .gossip
+        .subscribe_updates(topic)
+        .expect("C subscribe failed");
+    let mut rx_d = store_d
+        .gossip
+        .subscribe_updates(topic)
+        .expect("D subscribe failed");
+    let mut rx_e = store_e
+        .gossip
+        .subscribe_updates(topic)
+        .expect("E subscribe failed");
+
+    let data_x = b"commit: feature x - distributed archival";
+    let hash_x = store_a
+        .put_object(data_x, commit_meta(100))
+        .await
+        .expect("A put_object failed");
+
+    let data_y = b"commit: feature y - peer discovery";
+    let hash_y = store_b
+        .put_object(data_y, commit_meta(200))
+        .await
+        .expect("B put_object failed");
+
+    let ref_x = RefName::new("feature/x").expect("bad ref name");
+    let ref_y = RefName::new("feature/y").expect("bad ref name");
+
+    store_a
+        .update_reference_and_announce(ref_x, hash_x, topic)
+        .await
+        .expect("A announce failed");
+
+    store_b
+        .update_reference_and_announce(ref_y, hash_y, topic)
+        .await
+        .expect("B announce failed");
+
+    let timeout = Duration::from_secs(10);
+    let want = [hash_x, hash_y];
+
+    tokio::join!(
+        wait_for_updates(&mut rx_c, &want, timeout),
+        wait_for_updates(&mut rx_d, &want, timeout),
+        wait_for_updates(&mut rx_e, &want, timeout),
+    );
+
+    // @todo(o11y): pairwise O(n^2) reconciliation is fine for 5 nodes and 2 blobs.
+    //   in production, reconciliation would be triggered by gossip events, not polled.
+    let max_rounds = 5;
+    for _round in 0..max_rounds {
+        let mut progress = false;
+
+        for i in 0..5 {
+            for j in (i + 1)..5 {
+                let set_i = local_blob_set(stores[i], &[hash_x, hash_y]).await;
+                let set_j = local_blob_set(stores[j], &[hash_x, hash_y]).await;
+
+                let result =
+                    simulate_sync(set_i, set_j, 8).expect("simulate_sync failed");
+
+                if !result.a_needs.is_empty() {
+                    let fr = fetch_missing_blobs(
+                        &stores[i].blobs.store,
+                        &stores[i].blobs.endpoint,
+                        &result.a_needs,
+                        vec![addrs[j].clone()],
+                    )
+                    .await
+                    .expect("fetch for i failed");
+                    progress |= fr.fetched > 0;
+                }
+
+                if !result.b_needs.is_empty() {
+                    let fr = fetch_missing_blobs(
+                        &stores[j].blobs.store,
+                        &stores[j].blobs.endpoint,
+                        &result.b_needs,
+                        vec![addrs[i].clone()],
+                    )
+                    .await
+                    .expect("fetch for j failed");
+                    progress |= fr.fetched > 0;
+                }
+            }
+        }
+
+        if !progress {
+            break;
+        }
+    }
+
+    for (idx, store) in stores.iter().enumerate() {
+        let bytes_x = store
+            .blobs
+            .get_bytes(hash_x)
+            .await
+            .unwrap_or_else(|e| panic!("node {idx} missing feature X blob: {e}"));
+        assert_eq!(bytes_x, data_x, "node {idx} has wrong data for feature X");
+
+        let bytes_y = store
+            .blobs
+            .get_bytes(hash_y)
+            .await
+            .unwrap_or_else(|e| panic!("node {idx} missing feature Y blob: {e}"));
+        assert_eq!(bytes_y, data_y, "node {idx} has wrong data for feature Y");
+    }
+
+    for store in &stores {
+        store.shutdown().await.expect("shutdown failed");
+    }
 }

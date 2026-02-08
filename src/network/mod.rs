@@ -97,7 +97,10 @@ impl GossipHandle {
             }
         }
 
-        let gossip_topic = self.gossip.subscribe_and_join(topic, peers).await?;
+        // @todo(o11y): uses subscribe (non-blocking) instead of subscribe_and_join
+        //   because the latter blocks until a peer connects, which deadlocks if peers
+        //   join sequentially. messages are queued until a connection is established.
+        let gossip_topic = self.gossip.subscribe(topic, peers).await?;
         let (sender, mut receiver) = gossip_topic.split();
         let (updates_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         let tx = updates_tx.clone();

@@ -1,7 +1,12 @@
+use std::collections::BTreeSet;
+use std::time::Duration;
+
 use ark::domain::{BlobHash, BlobMetadata, BlobType, RefName};
 use ark::network::{derive_topic_id, HeadUpdate};
 use ark::storage::BlobStore;
 use camino::Utf8Path;
+use iroh::discovery::static_provider::StaticProvider;
+use tokio::sync::broadcast;
 
 async fn tmp_store() -> (tempfile::TempDir, BlobStore) {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -12,6 +17,49 @@ async fn tmp_store() -> (tempfile::TempDir, BlobStore) {
         .await
         .expect("failed to create store");
     (dir, store)
+}
+
+fn seed_addresses(stores: &[&BlobStore]) {
+    for (i, store_i) in stores.iter().enumerate() {
+        let provider = StaticProvider::new();
+        for (j, store_j) in stores.iter().enumerate() {
+            if i != j {
+                provider.add_endpoint_info(store_j.blobs.endpoint.addr());
+            }
+        }
+        store_i.blobs.endpoint.discovery().add(provider);
+    }
+}
+
+async fn wait_for_updates(
+    rx: &mut broadcast::Receiver<HeadUpdate>,
+    want: &[BlobHash],
+    timeout: Duration,
+) {
+    let mut seen = BTreeSet::new();
+    let target = want.len();
+
+    let result = tokio::time::timeout(timeout, async {
+        while seen.len() < target {
+            match rx.recv().await {
+                Ok(u) => {
+                    let h = u.hash();
+                    if want.contains(&h) {
+                        seen.insert(h);
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    continue;
+                }
+                Err(e) => {
+                    panic!("gossip recv failed: {e:?}");
+                }
+            }
+        }
+    })
+    .await;
+
+    result.expect("timed out waiting for gossip propagation");
 }
 
 // --- HeadUpdate serialization round-trip ---
@@ -168,4 +216,77 @@ async fn announce_without_join_errors() {
     assert!(result.is_err());
 
     store.shutdown().await.expect("shutdown failed");
+}
+
+// --- 5-node gossip propagation ---
+
+#[tokio::test]
+async fn gossip_broadcast_reaches_all_five_nodes() {
+    let (_dir_a, store_a) = tmp_store().await;
+    let (_dir_b, store_b) = tmp_store().await;
+    let (_dir_c, store_c) = tmp_store().await;
+    let (_dir_d, store_d) = tmp_store().await;
+    let (_dir_e, store_e) = tmp_store().await;
+
+    let stores = [&store_a, &store_b, &store_c, &store_d, &store_e];
+    let ids: Vec<_> = stores.iter().map(|s| s.blobs.endpoint.id()).collect();
+
+    seed_addresses(&stores);
+
+    let topic = derive_topic_id(b"gossip-broadcast-test");
+
+    store_a
+        .gossip
+        .join_topic(topic, ids[1..].to_vec())
+        .await
+        .expect("A join failed");
+
+    for store in &stores[1..] {
+        store
+            .gossip
+            .join_topic(topic, vec![ids[0]])
+            .await
+            .expect("join failed");
+    }
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let mut rx_b = store_b
+        .gossip
+        .subscribe_updates(topic)
+        .expect("B subscribe failed");
+    let mut rx_c = store_c
+        .gossip
+        .subscribe_updates(topic)
+        .expect("C subscribe failed");
+    let mut rx_d = store_d
+        .gossip
+        .subscribe_updates(topic)
+        .expect("D subscribe failed");
+    let mut rx_e = store_e
+        .gossip
+        .subscribe_updates(topic)
+        .expect("E subscribe failed");
+
+    let hash = BlobHash([42u8; 32]);
+    let update = HeadUpdate::new("main", hash, 1000);
+    store_a
+        .gossip
+        .broadcast_head_update(topic, &update)
+        .await
+        .expect("broadcast failed");
+
+    let timeout = Duration::from_secs(10);
+    let want = [hash];
+
+    tokio::join!(
+        wait_for_updates(&mut rx_b, &want, timeout),
+        wait_for_updates(&mut rx_c, &want, timeout),
+        wait_for_updates(&mut rx_d, &want, timeout),
+        wait_for_updates(&mut rx_e, &want, timeout),
+    );
+
+    for store in &stores {
+        store.shutdown().await.expect("shutdown failed");
+    }
 }
