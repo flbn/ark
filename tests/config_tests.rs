@@ -1,4 +1,4 @@
-use ark::config::Config;
+use ark::config::{resolve_remotes, Config, RemoteConfig};
 use camino::Utf8Path;
 
 fn write_toml(dir: &tempfile::TempDir, content: &str) -> camino::Utf8PathBuf {
@@ -128,4 +128,64 @@ enumerate_threshold = 4
     let config = Config::load(&path).expect("load failed");
     assert!(config.repos.is_empty());
     assert_eq!(config.sync.enumerate_threshold, 4);
+}
+
+// --- resolve_remotes ---
+
+#[test]
+fn resolve_valid_node_id() {
+    let key = iroh::SecretKey::generate(&mut rand::rng());
+    let node_id_str = key.public().to_string();
+
+    let remotes = vec![RemoteConfig {
+        name: "peer-a".to_string(),
+        node_id: node_id_str,
+    }];
+
+    let resolved = resolve_remotes(&remotes).expect("resolve failed");
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].name, "peer-a");
+    assert_eq!(resolved[0].endpoint_id, key.public());
+
+    let addr = resolved[0].endpoint_addr();
+    assert_eq!(addr.id, key.public());
+}
+
+#[test]
+fn resolve_invalid_node_id_errors() {
+    let remotes = vec![RemoteConfig {
+        name: "bad-peer".to_string(),
+        node_id: "not-a-valid-hex-key".to_string(),
+    }];
+
+    let result = resolve_remotes(&remotes);
+    assert!(result.is_err());
+}
+
+#[test]
+fn resolve_empty_remotes() {
+    let resolved = resolve_remotes(&[]).expect("resolve failed");
+    assert!(resolved.is_empty());
+}
+
+#[test]
+fn resolve_multiple_remotes() {
+    let key_a = iroh::SecretKey::generate(&mut rand::rng());
+    let key_b = iroh::SecretKey::generate(&mut rand::rng());
+
+    let remotes = vec![
+        RemoteConfig {
+            name: "peer-a".to_string(),
+            node_id: key_a.public().to_string(),
+        },
+        RemoteConfig {
+            name: "peer-b".to_string(),
+            node_id: key_b.public().to_string(),
+        },
+    ];
+
+    let resolved = resolve_remotes(&remotes).expect("resolve failed");
+    assert_eq!(resolved.len(), 2);
+    assert_eq!(resolved[0].endpoint_id, key_a.public());
+    assert_eq!(resolved[1].endpoint_id, key_b.public());
 }

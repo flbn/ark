@@ -1,4 +1,4 @@
-use ark::config::Config;
+use ark::config::{resolve_remotes, Config};
 use ark::network::derive_topic_id;
 use ark::network::listener::SyncListener;
 use ark::storage::BlobStore;
@@ -10,18 +10,17 @@ async fn main() -> anyhow::Result<()> {
 
     let store = BlobStore::new(&config.store.path).await?;
 
-    // @todo(o11y): remote ticket parsing is deferred — RemoteConfig currently holds
-    //   a node_id string but we have no ticket→EndpointAddr conversion yet.
-    //   for now, we join topics with no initial peers (gossip will discover them
-    //   via iroh's discovery mechanisms). once ticket parsing lands, pass peer IDs
-    //   to join_topic and provider addrs to SyncListener.
-
     let mut _listeners: Vec<SyncListener> = Vec::new();
 
     for repo in &config.repos {
+        let resolved = resolve_remotes(&repo.remotes)?;
+
+        let peer_ids: Vec<_> = resolved.iter().map(|r| r.endpoint_id).collect();
+        let provider_addrs: Vec<_> = resolved.iter().map(|r| r.endpoint_addr()).collect();
+
         let topic = derive_topic_id(repo.id.as_bytes());
 
-        store.gossip.join_topic(topic, Vec::new()).await?;
+        store.gossip.join_topic(topic, peer_ids).await?;
 
         let updates_rx = store.gossip.subscribe_updates(topic)?;
 
@@ -29,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
             updates_rx,
             store.blobs.store.clone(),
             store.blobs.endpoint.clone(),
-            Vec::new(),
+            provider_addrs,
         );
 
         _listeners.push(listener);
