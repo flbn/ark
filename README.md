@@ -18,3 +18,7 @@ notes:
 - nodes gossip to discover new commits. syncing is pull based. unlike git, we don't push to a central remote.
 - we don't trust the disk. rkyv validates every byte before it touches memory.
 - in ark, _everything is a blob_. md files or large multimedia assets, it doesn't really matter. iroh will auto-chunk large files -> which means we get deduping + the ability to stream large assets w/o a full download out of the box.
+- for the moment, ark has no cli. the binary reads `ark.toml` and runs.
+  - a client is a listener. it joins gossip topics, subscribes to head updates, and fetches referenced blobs from the announcing peer. there is no polling loop — sync is reactive. when a writer commits, it broadcasts the update via gossip. every subscribed client receives the event and pulls the missing blob.
+  - range based set reconciliation exists for two cases only: cold start catch up (i.e. new client joins an existing network) and recovery after network partition. it is **not** part of the normal sync flow.
+  - there's no `sync` command, no `add-remote`. no imperative interface. remotes and topics are declared in config. a cli is deferred until there's a reason to build one.

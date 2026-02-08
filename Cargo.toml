@@ -29,11 +29,14 @@ clap = { version = "4.5.54", features = ["derive"] }
 anyhow = { version = "1.0.100" }
 thiserror = { version = "2.0.17" }
 
+# config
+toml = { version = "0.8" }
+
 # utils
 blake3 = { version = "1" }
 bytecheck = { version = "0.8" }
 bytes = { version = "1" }
-camino = { version = "1.1" }
+camino = { version = "1.1", features = ["serde1"] }
 fs-err = { version = "3.1" }
 parking_lot = { version = "0.12" }
 rand = { version = "0.9" }
