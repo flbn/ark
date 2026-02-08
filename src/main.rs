@@ -3,12 +3,42 @@ use ark::network::derive_topic_id;
 use ark::network::listener::SyncListener;
 use ark::storage::BlobStore;
 use camino::Utf8Path;
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(name = "ark", about = "a sovereign archive")]
+struct Cli {
+    #[arg(long, default_value = "ark.toml")]
+    config: String,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Print this node's endpoint ID and exit
+    Id,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = Config::load(Utf8Path::new("ark.toml"))?;
-
+    let cli = Cli::parse();
+    let config = Config::load(Utf8Path::new(&cli.config))?;
     let store = BlobStore::new(&config.store.path).await?;
+
+    let endpoint_id = store.blobs.endpoint.id();
+    let id_path = config.store.path.join("endpoint_id");
+    fs_err::write(&id_path, endpoint_id.to_string())?;
+
+    if let Some(Command::Id) = cli.command {
+        #[allow(clippy::print_stdout)]
+        {
+            println!("{endpoint_id}");
+        }
+        store.shutdown().await?;
+        return Ok(());
+    }
 
     let mut _listeners: Vec<SyncListener> = Vec::new();
 
@@ -88,6 +118,28 @@ mod tests {
             store.shutdown().await?;
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn endpoint_id_file_written_on_startup() -> anyhow::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let root_path = Utf8Path::from_path(temp_dir.path())
+            .ok_or_else(|| anyhow::anyhow!("non-utf8 temp path"))?;
+
+        let store = BlobStore::new(root_path).await?;
+        let endpoint_id = store.blobs.endpoint.id();
+
+        let id_path = root_path.join("endpoint_id");
+        fs_err::write(&id_path, endpoint_id.to_string())?;
+
+        let read_back = fs_err::read_to_string(&id_path)?;
+        assert_eq!(read_back, endpoint_id.to_string());
+
+        let parsed: iroh::EndpointId = read_back.parse()?;
+        assert_eq!(parsed, endpoint_id);
+
+        store.shutdown().await?;
         Ok(())
     }
 }
