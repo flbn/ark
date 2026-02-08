@@ -52,6 +52,15 @@ async fn main() -> anyhow::Result<()> {
 
         store.gossip.join_topic(topic, peer_ids).await?;
 
+        // @todo(o11y): cold-start reconciliation errors are silently ignored per-peer.
+        //   a single unreachable peer should not prevent the daemon from starting.
+        //   log these once tracing is wired up.
+        for addr in &provider_addrs {
+            let _ = store
+                .reconcile_with_peer(addr.clone(), config.sync.enumerate_threshold)
+                .await;
+        }
+
         let updates_rx = store.gossip.subscribe_updates(topic)?;
 
         let listener = SyncListener::spawn(
