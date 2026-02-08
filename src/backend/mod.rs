@@ -53,6 +53,8 @@ impl Debug for ArkBackend {
 }
 
 impl ArkBackend {
+    pub const BACKEND_NAME: &str = "ark";
+
     pub async fn new(store: Arc<BlobStore>) -> Result<Self, BackendError> {
         let empty_tree = StoredTree {
             entries: Vec::new(),
@@ -101,6 +103,10 @@ impl ArkBackend {
             empty_tree_id,
             next_commit_local_only: Mutex::new(false),
         })
+    }
+
+    pub fn store(&self) -> &Arc<BlobStore> {
+        &self.store
     }
 
     pub fn mark_next_commit_local_only(&self) {
@@ -254,7 +260,7 @@ fn timestamp_now() -> u64 {
 #[async_trait]
 impl Backend for ArkBackend {
     fn name(&self) -> &str {
-        "ark"
+        Self::BACKEND_NAME
     }
 
     fn commit_id_length(&self) -> usize {
