@@ -67,7 +67,7 @@ async fn wait_for_updates(
 #[test]
 fn head_update_rkyv_roundtrip() {
     let hash = BlobHash([42u8; 32]);
-    let update = HeadUpdate::new("main", hash, 1000);
+    let update = HeadUpdate::new("main", hash, 1000, 0);
 
     let bytes = rkyv::to_bytes::<rancor::Error>(&update).expect("serialize failed");
     let decoded =
@@ -82,8 +82,8 @@ fn head_update_rkyv_roundtrip() {
 #[test]
 fn head_update_different_refs() {
     let hash = BlobHash([1u8; 32]);
-    let u1 = HeadUpdate::new("main", hash, 100);
-    let u2 = HeadUpdate::new("feature/x", hash, 200);
+    let u1 = HeadUpdate::new("main", hash, 100, 0);
+    let u2 = HeadUpdate::new("feature/x", hash, 200, 0);
 
     assert_eq!(u1.ref_name, "main");
     assert_eq!(u2.ref_name, "feature/x");
@@ -119,7 +119,7 @@ fn topic_id_empty_input() {
 async fn broadcast_without_join_errors() {
     let (_dir, store) = tmp_store().await;
     let topic = derive_topic_id(b"test-repo");
-    let update = HeadUpdate::new("main", BlobHash([0u8; 32]), 1);
+    let update = HeadUpdate::new("main", BlobHash([0u8; 32]), 1, 0);
 
     let result = store.gossip.broadcast_head_update(topic, &update).await;
     assert!(result.is_err());
@@ -182,7 +182,7 @@ async fn store_exposes_gossip_handle() {
     let (_dir, store) = tmp_store().await;
 
     let topic = derive_topic_id(b"repo-test");
-    let update = HeadUpdate::new("main", BlobHash([7u8; 32]), 42);
+    let update = HeadUpdate::new("main", BlobHash([7u8; 32]), 42, 0);
 
     let result = store.gossip.broadcast_head_update(topic, &update).await;
     assert!(result.is_err());
@@ -269,7 +269,7 @@ async fn gossip_broadcast_reaches_all_five_nodes() {
         .expect("E subscribe failed");
 
     let hash = BlobHash([42u8; 32]);
-    let update = HeadUpdate::new("main", hash, 1000);
+    let update = HeadUpdate::new("main", hash, 1000, 0);
     store_a
         .gossip
         .broadcast_head_update(topic, &update)

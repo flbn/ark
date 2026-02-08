@@ -20,6 +20,15 @@ pub struct EmptyRemoteTicket;
 #[repr(C)] // NOTE:(@o11y) this allows direct casting from bytes w/o parsing
 pub struct BlobHash(pub [u8; 32]); // 32-byte blake3 hash
 
+impl std::fmt::Display for BlobHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
 // wrapped to ensure we never pass fuqqd up arrays where a hash is expected
 impl From<iroh_blobs::Hash> for BlobHash {
     fn from(h: iroh_blobs::Hash) -> Self {
@@ -98,8 +107,23 @@ pub struct BlobMetadata {
 #[rkyv(compare(PartialEq))]
 #[repr(u8)]
 pub enum BlobType {
-    Commit,
-    Tree,
-    File,
-    Symlink,
+    Commit = 0,
+    Tree = 1,
+    File = 2,
+    Symlink = 3,
+}
+
+impl BlobType {
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Commit,
+            1 => Self::Tree,
+            2 => Self::File,
+            _ => Self::Symlink,
+        }
+    }
 }

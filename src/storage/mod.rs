@@ -123,12 +123,18 @@ impl BlobStore {
     ) -> Result<(), StoreError> {
         self.index.update_ref(&name, hash)?;
 
+        let blob_type = self
+            .index
+            .get_blob_meta(hash)?
+            .map(|m| m.blob_type.to_u8())
+            .unwrap_or(2);
+
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        let update = HeadUpdate::new(name.as_str(), hash, timestamp);
+        let update = HeadUpdate::new(name.as_str(), hash, timestamp, blob_type);
         self.gossip
             .broadcast_head_update(topic, &update)
             .await

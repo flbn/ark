@@ -2,4 +2,9 @@
 
 # db artifacts
 *.db
+
+# local dev
 data/
+
+# macos
+.DS_Store

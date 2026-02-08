@@ -73,6 +73,7 @@ async fn listener_fetches_blob_on_gossip_update() {
         store_b.blobs.store.clone(),
         store_b.blobs.endpoint.clone(),
         vec![store_a.blobs.endpoint.addr()],
+        store_b.index.clone(),
     );
 
     let data = b"reactive sync test blob";
@@ -142,6 +143,7 @@ async fn listener_fetches_multiple_blobs() {
         store_b.blobs.store.clone(),
         store_b.blobs.endpoint.clone(),
         vec![store_a.blobs.endpoint.addr()],
+        store_b.index.clone(),
     );
 
     let mut expected: Vec<(BlobHash, Vec<u8>)> = Vec::new();

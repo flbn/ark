@@ -40,14 +40,16 @@ pub struct HeadUpdate {
     pub ref_name: String,
     pub blob_hash: [u8; 32],
     pub timestamp: u64,
+    pub blob_type: u8,
 }
 
 impl HeadUpdate {
-    pub fn new(ref_name: &str, hash: BlobHash, timestamp: u64) -> Self {
+    pub fn new(ref_name: &str, hash: BlobHash, timestamp: u64, blob_type: u8) -> Self {
         Self {
             ref_name: ref_name.to_owned(),
             blob_hash: hash.0,
             timestamp,
+            blob_type,
         }
     }
 
