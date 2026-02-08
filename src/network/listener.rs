@@ -3,14 +3,17 @@
 // from known providers. this is the "gossip event → fetch" steady-state path.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use iroh::EndpointAddr;
 use iroh_blobs::store::fs::FsStore;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
+use crate::domain::{BlobMetadata, BlobType, RefName};
 use crate::network::sync::fetch_missing_blobs;
 use crate::network::HeadUpdate;
+use crate::storage::index::Index;
 
 // @todo(o11y): SyncListener holds no in-flight dedupe set — duplicate HeadUpdates
 //   for the same blob_hash will trigger redundant (but idempotent) downloads.
@@ -29,6 +32,7 @@ impl SyncListener {
         store: FsStore,
         endpoint: iroh::Endpoint,
         providers: Vec<EndpointAddr>,
+        index: Arc<Index>,
     ) -> Self {
         let task = tokio::spawn(async move {
             loop {
@@ -40,9 +44,24 @@ impl SyncListener {
 
                         // @todo(o11y): fetch errors are silently dropped here.
                         //   wire up tracing once the logging stack is chosen.
-                        let _ =
+                        let result =
                             fetch_missing_blobs(&store, &endpoint, &missing, providers.clone())
                                 .await;
+
+                        if let Ok(fr) = result
+                            && fr.fetched > 0
+                        {
+                            let meta = BlobMetadata {
+                                blob_type: BlobType::from_u8(update.blob_type),
+                                created_at: update.timestamp,
+                                local_only: false,
+                            };
+                            let _ = index.register_blob(hash, meta);
+
+                            if let Ok(ref_name) = RefName::new(&update.ref_name) {
+                                let _ = index.update_ref(&ref_name, hash);
+                            }
+                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         // @todo(o11y): lagged means we dropped messages — log this

@@ -149,6 +149,19 @@ impl Index {
         Ok(removed)
     }
 
+    pub fn list_all_blobs(&self) -> Result<Vec<(BlobHash, BlobMetadata)>, IndexError> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(BLOB_INDEX)?;
+        let mut result = Vec::new();
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            let meta = rkyv::from_bytes::<BlobMetadata, rancor::Error>(value.value())
+                .map_err(|e: rancor::Error| IndexError::Rkyv(e.to_string()))?;
+            result.push((BlobHash(*key.value()), meta));
+        }
+        Ok(result)
+    }
+
     // @todo(o11y): O(n) scan — same as list_shared_blobs. add secondary table if scale demands it.
     pub fn list_local_only_blobs(&self) -> Result<Vec<(BlobHash, BlobMetadata)>, IndexError> {
         let read_txn = self.db.begin_read()?;

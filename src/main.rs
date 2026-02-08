@@ -1,9 +1,13 @@
 use ark::config::{resolve_remotes, Config};
+use ark::control::{self, Request, Response};
+use ark::domain::BlobHash;
 use ark::network::derive_topic_id;
 use ark::network::listener::SyncListener;
 use ark::storage::BlobStore;
 use camino::Utf8Path;
 use clap::Parser;
+
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "ark", about = "a sovereign archive")]
@@ -19,12 +23,108 @@ struct Cli {
 enum Command {
     /// Print this node's endpoint ID and exit
     Id,
+    /// Publish a file to the network (requires running daemon)
+    Publish {
+        /// Path to the file to publish
+        file: String,
+        /// Reference name (e.g., "images/photo.png")
+        #[arg(long, short)]
+        r#ref: String,
+    },
+    /// List all blobs in the local store (requires running daemon)
+    List,
+    /// Retrieve a blob by hash and write to a file (requires running daemon)
+    Get {
+        /// Hex-encoded blob hash
+        hash: String,
+        /// Output file path
+        #[arg(long, short)]
+        output: String,
+    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = Config::load(Utf8Path::new(&cli.config))?;
+
+    match cli.command {
+        Some(Command::Publish { file, r#ref }) => {
+            let data = fs_err::read(&file)?;
+            let repo_id = config
+                .repos
+                .first()
+                .map(|r| r.id.clone())
+                .ok_or_else(|| anyhow::anyhow!("no repos configured"))?;
+
+            let resp =
+                control::send_request(&config.store.path, &Request::Publish { data, ref_name: r#ref, repo_id })
+                    .await?;
+
+            match resp {
+                Response::Published { hash } => {
+                    #[allow(clippy::print_stdout)]
+                    {
+                        println!("{} published", BlobHash(hash));
+                    }
+                }
+                Response::Error { message } => anyhow::bail!("{message}"),
+                _ => anyhow::bail!("unexpected response"),
+            }
+            return Ok(());
+        }
+        Some(Command::List) => {
+            let resp = control::send_request(&config.store.path, &Request::List).await?;
+
+            match resp {
+                Response::BlobList { blobs } => {
+                    if blobs.is_empty() {
+                        #[allow(clippy::print_stdout)]
+                        {
+                            println!("no blobs");
+                        }
+                    } else {
+                        for entry in &blobs {
+                            #[allow(clippy::print_stdout)]
+                            {
+                                println!(
+                                    "{} type={} created_at={} local_only={}",
+                                    BlobHash(entry.hash),
+                                    entry.blob_type,
+                                    entry.created_at,
+                                    entry.local_only,
+                                );
+                            }
+                        }
+                    }
+                }
+                Response::Error { message } => anyhow::bail!("{message}"),
+                _ => anyhow::bail!("unexpected response"),
+            }
+            return Ok(());
+        }
+        Some(Command::Get { hash, output }) => {
+            let blob_hash = parse_hex_hash(&hash)?;
+            let resp =
+                control::send_request(&config.store.path, &Request::Get { hash: blob_hash.0 })
+                    .await?;
+
+            match resp {
+                Response::BlobData { data } => {
+                    fs_err::write(&output, &data)?;
+                    #[allow(clippy::print_stdout)]
+                    {
+                        println!("wrote {} to {output}", BlobHash(blob_hash.0));
+                    }
+                }
+                Response::Error { message } => anyhow::bail!("{message}"),
+                _ => anyhow::bail!("unexpected response"),
+            }
+            return Ok(());
+        }
+        Some(Command::Id) | None => {}
+    }
+
     let store = BlobStore::new(&config.store.path).await?;
 
     let endpoint_id = store.blobs.endpoint.id();
@@ -39,6 +139,11 @@ async fn main() -> anyhow::Result<()> {
         store.shutdown().await?;
         return Ok(());
     }
+
+    let store = Arc::new(store);
+    let repo_ids: Vec<String> = config.repos.iter().map(|r| r.id.clone()).collect();
+
+    let _control = control::ControlServer::spawn(&config.store.path, store.clone(), repo_ids)?;
 
     let mut _listeners: Vec<SyncListener> = Vec::new();
 
@@ -68,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
             store.blobs.store.clone(),
             store.blobs.endpoint.clone(),
             provider_addrs,
+            store.index.clone(),
         );
 
         _listeners.push(listener);
@@ -81,6 +187,17 @@ async fn main() -> anyhow::Result<()> {
     store.shutdown().await?;
 
     Ok(())
+}
+
+fn parse_hex_hash(s: &str) -> anyhow::Result<BlobHash> {
+    if s.len() != 64 {
+        anyhow::bail!("expected 64 hex characters, got {}", s.len());
+    }
+    let mut bytes = [0u8; 32];
+    for i in 0..32 {
+        bytes[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)?;
+    }
+    Ok(BlobHash(bytes))
 }
 
 #[cfg(test)]
