@@ -1,6 +1,7 @@
 pub mod ids;
 pub mod objects;
 
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -112,6 +113,90 @@ impl ArkBackend {
     pub fn mark_next_commit_local_only(&self) {
         *self.next_commit_local_only.lock() = true;
     }
+
+    fn build_reachable_set(
+        &self,
+        index: &dyn Index,
+        all_blobs: &[(crate::domain::BlobHash, BlobMetadata)],
+    ) -> BackendResult<HashSet<[u8; 32]>> {
+        let mut reachable = HashSet::new();
+        let mut tree_stack: Vec<[u8; 32]> = Vec::new();
+
+        for (hash, meta) in all_blobs {
+            if !matches!(meta.blob_type, BlobType::Commit) {
+                continue;
+            }
+            let commit_id = blob_hash_to_commit_id(*hash);
+            let is_reachable = index
+                .has_id(&commit_id)
+                .map_err(|e| BackendError::Other(e.into()))?;
+            if !is_reachable {
+                continue;
+            }
+            reachable.insert(hash.0);
+
+            let bytes = block_on_read(&self.store, *hash)?;
+            let stored =
+                rkyv::from_bytes::<StoredCommit, rancor::Error>(&bytes).map_err(|e| {
+                    BackendError::ReadObject {
+                        object_type: "commit".to_string(),
+                        hash: commit_id.hex(),
+                        source: Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e.to_string(),
+                        )),
+                    }
+                })?;
+            for tree_id in &stored.root_tree_ids {
+                if reachable.insert(*tree_id) {
+                    tree_stack.push(*tree_id);
+                }
+            }
+        }
+
+        let mut visited_trees = HashSet::new();
+        while let Some(tree_hash) = tree_stack.pop() {
+            if !visited_trees.insert(tree_hash) {
+                continue;
+            }
+            let blob_hash = crate::domain::BlobHash(tree_hash);
+            let bytes = match block_on_read(&self.store, blob_hash) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let stored = match rkyv::from_bytes::<StoredTree, rancor::Error>(&bytes) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            for entry in &stored.entries {
+                reachable.insert(entry.id);
+                if matches!(entry.kind, StoredEntryKind::Tree) {
+                    tree_stack.push(entry.id);
+                }
+            }
+        }
+
+        Ok(reachable)
+    }
+}
+
+fn block_on_read(
+    store: &Arc<BlobStore>,
+    hash: crate::domain::BlobHash,
+) -> BackendResult<Vec<u8>> {
+    let store = store.clone();
+    let fut = async move { store.blobs.get_bytes(hash).await };
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| BackendError::Other(e.into()))?;
+            rt.block_on(fut)
+        }
+    };
+    result.map_err(|e| BackendError::Other(e.into()))
 }
 
 fn id_bytes_to_hash(bytes: &[u8]) -> [u8; 32] {
@@ -514,14 +599,19 @@ impl Backend for ArkBackend {
         Ok(Box::pin(futures::stream::empty()))
     }
 
-    // @todo(o11y): gc only considers commit blobs — tree/file/symlink blobs referenced
-    //   by unreachable commits are not reclaimed. full object-graph GC would require
-    //   traversing from reachable commits down to trees and files. acceptable for Phase II.
     fn gc(&self, index: &dyn Index, keep_newer: SystemTime) -> BackendResult<()> {
         let keep_newer_secs = keep_newer
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+
+        let all_blobs = self
+            .store
+            .index
+            .list_all_blobs()
+            .map_err(|e| BackendError::Other(e.into()))?;
+
+        let reachable = self.build_reachable_set(index, &all_blobs)?;
 
         let locals = self
             .store
@@ -530,21 +620,12 @@ impl Backend for ArkBackend {
             .map_err(|e| BackendError::Other(e.into()))?;
 
         for (hash, meta) in locals {
-            if !matches!(meta.blob_type, BlobType::Commit) {
-                continue;
-            }
             if meta.created_at >= keep_newer_secs {
                 continue;
             }
-
-            let commit_id = blob_hash_to_commit_id(hash);
-            let reachable = index
-                .has_id(&commit_id)
-                .map_err(|e| BackendError::Other(e.into()))?;
-            if reachable {
+            if reachable.contains(&hash.0) {
                 continue;
             }
-
             self.store
                 .delete_object(hash)
                 .map_err(|e| BackendError::Other(e.into()))?;
