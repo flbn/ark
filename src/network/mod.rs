@@ -2,6 +2,7 @@
 // nodes subscribe to a topic per repo and broadcast ref updates on checkpoint commits.
 
 pub mod listener;
+pub mod recon;
 pub mod sync;
 
 use std::collections::HashMap;

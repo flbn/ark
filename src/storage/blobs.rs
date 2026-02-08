@@ -1,12 +1,16 @@
 // tldr: wraps iroh-blobs to handle content-addressed storage and p2p transfer
 
 use crate::domain::BlobHash;
+use crate::network::recon::{ReconProtocol, RECON_ALPN};
+use crate::storage::index::Index;
 use iroh::{Endpoint, SecretKey, discovery::dns::DnsDiscovery, protocol::Router};
 use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol, store::fs::FsStore};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 use camino::Utf8Path;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
+
+use std::sync::Arc;
 
 #[derive(Error, Debug)]
 pub enum BlobError {
@@ -53,7 +57,7 @@ async fn load_or_create_secret_key(path: &Utf8Path) -> Result<SecretKey, BlobErr
 }
 
 impl NetworkedBlobStore {
-    pub async fn new(blobs_dir: impl AsRef<Utf8Path>) -> Result<Self, BlobError> {
+    pub async fn new(blobs_dir: impl AsRef<Utf8Path>, index: Arc<Index>) -> Result<Self, BlobError> {
         let blobs_dir = blobs_dir.as_ref();
 
         tokio::fs::create_dir_all(blobs_dir).await?;
@@ -71,10 +75,12 @@ impl NetworkedBlobStore {
 
         let gossip = Gossip::builder().spawn(endpoint.clone());
         let blobs_protocol = BlobsProtocol::new(&store, None);
+        let recon = ReconProtocol::new(index);
 
         let router = Router::builder(endpoint.clone())
             .accept(BLOBS_ALPN, blobs_protocol)
             .accept(GOSSIP_ALPN, gossip.clone())
+            .accept(RECON_ALPN, recon)
             .spawn();
 
         Ok(Self {

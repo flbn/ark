@@ -2,6 +2,7 @@ pub mod blobs;
 pub mod index;
 
 use crate::domain::{BlobHash, BlobMetadata, RefName};
+use crate::network::recon::{self, ReconError};
 use crate::network::{GossipError, GossipHandle, HeadUpdate};
 use blobs::{BlobError, NetworkedBlobStore};
 use index::{Index, IndexError};
@@ -9,6 +10,7 @@ use index::{Index, IndexError};
 use camino::Utf8Path;
 use thiserror::Error;
 
+use std::sync::Arc;
 use std::time::SystemTime;
 
 #[derive(Error, Debug)]
@@ -19,10 +21,12 @@ pub enum StoreError {
     Blob(#[from] Box<BlobError>),
     #[error("Gossip error: {0}")]
     Gossip(#[from] Box<GossipError>),
+    #[error("Reconciliation error: {0}")]
+    Recon(#[from] ReconError),
 }
 
 pub struct BlobStore {
-    pub index: Index,
+    pub index: Arc<Index>,
     pub blobs: NetworkedBlobStore,
     pub gossip: GossipHandle,
 }
@@ -36,9 +40,9 @@ impl BlobStore {
         }
 
         let db_path = root.join("index.redb");
-        let index = Index::new(db_path)?;
+        let index = Arc::new(Index::new(db_path)?);
 
-        let blobs = NetworkedBlobStore::new(root.join("blobs")).await?;
+        let blobs = NetworkedBlobStore::new(root.join("blobs"), index.clone()).await?;
 
         let gossip = GossipHandle::new(blobs.gossip.clone());
 
@@ -91,6 +95,22 @@ impl BlobStore {
     pub async fn update_reference(&self, name: RefName, hash: BlobHash) -> Result<(), StoreError> {
         self.index.update_ref(&name, hash)?;
         Ok(())
+    }
+
+    pub async fn reconcile_with_peer(
+        &self,
+        peer: iroh::EndpointAddr,
+        enumerate_threshold: usize,
+    ) -> Result<crate::network::sync::FetchResult, StoreError> {
+        let result = recon::initiate_recon(
+            &self.blobs.endpoint,
+            &self.blobs.store,
+            &self.index,
+            peer,
+            enumerate_threshold,
+        )
+        .await?;
+        Ok(result)
     }
 
     // @todo(o11y): update_reference_and_announce requires a pre-joined topic — callers
